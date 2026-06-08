@@ -1,0 +1,20 @@
+{
+  "name": "wiki-questions",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "ask": "tsx --env-file=.env cli.ts ask",
+    "demo": "tsx --env-file=.env cli.ts demo",
+    "eval": "tsx --env-file=.env eval/runner.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "commander": "^12.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

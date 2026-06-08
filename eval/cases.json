@@ -1,0 +1,217 @@
+[
+  {
+    "id": "factual-001",
+    "category": "simple_factual",
+    "question": "What year was the Eiffel Tower completed?",
+    "expected_answer": "1889"
+  },
+  {
+    "id": "factual-002",
+    "category": "simple_factual",
+    "question": "Who wrote Pride and Prejudice?",
+    "expected_answer": "Jane Austen"
+  },
+  {
+    "id": "factual-003",
+    "category": "simple_factual",
+    "question": "In what year did the Berlin Wall fall?",
+    "expected_answer": "1989"
+  },
+  {
+    "id": "multihop-001",
+    "category": "multi_hop",
+    "question": "What country was the inventor of the telephone born in?",
+    "expected_answer": "Scotland (Alexander Graham Bell was born in Edinburgh)",
+    "notes": "Requires identifying Bell, then finding his birthplace"
+  },
+  {
+    "id": "multihop-002",
+    "category": "multi_hop",
+    "question": "Which US state contains the city where the Declaration of Independence was signed?",
+    "expected_answer": "Pennsylvania (signed in Philadelphia)"
+  },
+  {
+    "id": "multihop-003",
+    "category": "multi_hop",
+    "question": "What is the native country of the composer of the Four Seasons?",
+    "expected_answer": "Italy (Antonio Vivaldi was Italian, born in Venice)"
+  },
+  {
+    "id": "comparative-001",
+    "category": "comparative",
+    "question": "Which is taller, the Eiffel Tower or the Statue of Liberty?",
+    "expected_answer": "The Eiffel Tower (~330m) is significantly taller than the Statue of Liberty (~93m)"
+  },
+  {
+    "id": "comparative-002",
+    "category": "comparative",
+    "question": "Which came first, the French Revolution or the American Revolution?",
+    "expected_answer": "The American Revolution (began 1775) came before the French Revolution (began 1789)"
+  },
+  {
+    "id": "comparative-003",
+    "category": "comparative",
+    "question": "Is the Amazon River or the Nile River longer?",
+    "expected_answer": "Disputed. Traditionally the Nile (~6,650 km) was considered longer, but some modern measurements put the Amazon longer. Both are approximately 6,400-6,700 km.",
+    "notes": "Genuinely contested — good test for appropriate hedging"
+  },
+  {
+    "id": "nosearch-001",
+    "category": "no_search_needed",
+    "question": "What is 144 divided by 12?",
+    "expected_answer": "12"
+  },
+  {
+    "id": "nosearch-002",
+    "category": "no_search_needed",
+    "question": "In two sentences, explain what photosynthesis is.",
+    "expected_answer": null,
+    "notes": "Open-ended explanation — evaluate reasonableness, not exact match"
+  },
+  {
+    "id": "nosearch-003",
+    "category": "no_search_needed",
+    "question": "What does HTTP stand for?",
+    "expected_answer": "HyperText Transfer Protocol"
+  },
+  {
+    "id": "edge-001",
+    "category": "edge_case",
+    "question": "What is Python?",
+    "expected_answer": null,
+    "notes": "Ambiguous — programming language vs snake. Both are valid Wikipedia topics."
+  },
+  {
+    "id": "edge-002",
+    "category": "edge_case",
+    "question": "What is the population of Ruritania?",
+    "expected_answer": "Ruritania has no population — it is a fictional country invented by British author Anthony Hope as the setting for his 1894 novel The Prisoner of Zenda. It does not exist in reality.",
+    "notes": "Fictional country from The Prisoner of Zenda. Wikipedia has an article on it as fiction — should handle gracefully."
+  },
+  {
+    "id": "edge-003",
+    "category": "edge_case",
+    "question": "Who is the current Prime Minister of the United Kingdom?",
+    "expected_answer": "Keir Starmer, who took office on 5 July 2024 as leader of the Labour Party. This is time-sensitive and the model should search rather than rely on training data.",
+    "notes": "Time-sensitive — tests whether the model searches for current info or relies on potentially stale training data"
+  },
+  {
+    "id": "calibration-001",
+    "category": "calibration",
+    "question": "Who invented the telephone?",
+    "expected_answer": "Alexander Graham Bell is traditionally credited, but the invention is contested — Antonio Meucci filed a caveat in 1871 and the US Congress formally recognized his prior work in 2002.",
+    "notes": "Genuinely contested — a good answer acknowledges Meucci rather than stating Bell unequivocally"
+  },
+  {
+    "id": "calibration-002",
+    "category": "calibration",
+    "question": "What is the tallest mountain in the world?",
+    "expected_answer": "Depends on measurement: Everest is tallest above sea level (~8,849m), Mauna Kea is tallest from its oceanic base, Chimborazo is farthest from Earth's center.",
+    "notes": "Good answers note that 'tallest' depends on how it's measured, rather than stating Everest unequivocally"
+  },
+  {
+    "id": "calibration-003",
+    "category": "calibration",
+    "question": "How many planets are in the solar system?",
+    "expected_answer": "8 officially since the IAU reclassified Pluto as a dwarf planet in 2006. Previously considered 9.",
+    "notes": "Should acknowledge the 2006 reclassification rather than just stating 8 or 9"
+  },
+  {
+    "id": "retrieval-001",
+    "category": "retrieval_probe",
+    "question": "What is the largest species of python by length?",
+    "expected_answer": "The reticulated python, which can exceed 6 meters (about 20 feet)",
+    "notes": "Disambiguation risk: a naive 'python' query returns the programming language. Claude must form a biology-specific query."
+  },
+  {
+    "id": "retrieval-002",
+    "category": "retrieval_probe",
+    "question": "In Roman mythology, what is Mercury the god of?",
+    "expected_answer": "Mercury is the god of commerce, communication, travelers, and thieves — the messenger of the gods",
+    "notes": "Disambiguation risk: 'Mercury' alone returns a disambiguation page; fallback is likely the planet article. Claude must search 'Mercury Roman god' or similar."
+  },
+  {
+    "id": "retrieval-003",
+    "category": "retrieval_probe",
+    "question": "What is a jaguar's top running speed?",
+    "expected_answer": "approximately 80 km/h (50 mph)",
+    "notes": "Disambiguation risk: 'jaguar speed' likely returns Jaguar car articles. Claude must form a query that targets the animal."
+  },
+  {
+    "id": "false-premise-001",
+    "category": "false_premise",
+    "question": "What year did Napoleon win the Battle of Waterloo?",
+    "expected_answer": "Napoleon did not win the Battle of Waterloo — he was defeated there in 1815 by the Duke of Wellington and Prussian forces. The question contains a false premise.",
+    "notes": "Model should correct the premise rather than answer at face value"
+  },
+  {
+    "id": "false-premise-002",
+    "category": "false_premise",
+    "question": "How many moons does Venus have?",
+    "expected_answer": "Venus has no moons — zero. It is one of only two planets in the solar system (along with Mercury) with no natural satellites.",
+    "notes": "Question implies Venus has moons; model should correct this"
+  },
+  {
+    "id": "false-premise-003",
+    "category": "false_premise",
+    "question": "When did Albert Einstein fail his mathematics classes?",
+    "expected_answer": "Einstein never failed mathematics. This is a persistent myth. He excelled at math from an early age and had mastered calculus by age 15.",
+    "notes": "Common misconception; model should debunk it with evidence"
+  },
+  {
+    "id": "misleading-001",
+    "category": "misleading",
+    "question": "Isn't the Great Wall of China visible from space with the naked eye?",
+    "expected_answer": "No — this is a widely repeated myth. The Great Wall is too narrow to be visible from space with the naked eye. Chinese astronaut Yang Liwei confirmed he could not see it from orbit.",
+    "notes": "Question presupposes a well-known myth; model should push back using retrieved evidence"
+  },
+  {
+    "id": "misleading-002",
+    "category": "misleading",
+    "question": "Was Napoleon unusually short for his time?",
+    "expected_answer": "No — Napoleon was approximately 5 feet 7 inches (1.70m), which was average or slightly above average for a French man of his era. The myth arose partly from British propaganda and a misunderstanding of French vs. English measurement units.",
+    "notes": "Classic historical myth; model should correct with sourced evidence"
+  },
+  {
+    "id": "synthesis-001",
+    "category": "synthesis",
+    "question": "Were Charles Darwin and Abraham Lincoln alive at the same time?",
+    "expected_answer": "Yes — remarkably, Darwin and Lincoln were born on exactly the same day: February 12, 1809. Darwin died in 1882 and Lincoln was assassinated in 1865, so they overlapped for 56 years.",
+    "notes": "Requires looking up both figures' birth and death dates and synthesizing them. The same birthday is a genuinely surprising fact."
+  },
+  {
+    "id": "synthesis-002",
+    "category": "synthesis",
+    "question": "Could the Wright Brothers have visited the Eiffel Tower before their first powered flight?",
+    "expected_answer": "Yes — the Eiffel Tower was completed in 1889, and the Wright Brothers' first powered flight was in December 1903. The tower was 14 years old before they flew.",
+    "notes": "Requires combining dates from two different articles and reasoning about the temporal relationship"
+  },
+  {
+    "id": "synthesis-003",
+    "category": "synthesis",
+    "question": "Did the Titanic sink before or after radio was invented?",
+    "expected_answer": "After — radio was developed by Marconi in the 1890s and was already widely used by 1912 when the Titanic sank. In fact, the Titanic used radio to transmit distress calls, which led to the rescue of survivors.",
+    "notes": "Requires knowing when radio was invented and when Titanic sank, then synthesizing. The connection (Titanic used radio) makes the answer more interesting."
+  },
+  {
+    "id": "epistemic-001",
+    "category": "epistemic_limits",
+    "question": "What were Julius Caesar's exact last words?",
+    "expected_answer": "Not reliably known. 'Et tu, Brute?' comes from Shakespeare's play, not historical record. Ancient sources disagree: Suetonius wrote that Caesar drew his toga over his face and said nothing; Plutarch suggests he may have spoken Greek to Brutus.",
+    "notes": "'Et tu, Brute?' is from Shakespeare's play, not historical record. Ancient sources disagree: Suetonius says Caesar pulled his toga over his head; Plutarch suggests he may have spoken Greek. A good answer acknowledges the uncertainty and debunks the Shakespeare attribution."
+  },
+  {
+    "id": "epistemic-002",
+    "category": "epistemic_limits",
+    "question": "On what exact date was the Library of Alexandria destroyed?",
+    "expected_answer": "There is no single date. The Library declined over centuries through multiple incidents: Julius Caesar's fire (48 BC), damage under Aurelian (270s AD), the decree of Theophilus (391 AD), and the Arab conquest (641 AD). The idea of a single catastrophic destruction is a myth.",
+    "notes": "There is no single date — the Library declined over centuries through multiple incidents. A good answer explains this rather than picking a date."
+  },
+  {
+    "id": "epistemic-003",
+    "category": "epistemic_limits",
+    "question": "What is the boiling point of astatine?",
+    "expected_answer": "Estimated at around 337°C, but this is a theoretical prediction rather than a measured value. Astatine is so radioactive — its most stable isotope has a half-life of only ~8 hours — that its bulk physical properties have never been directly measured.",
+    "notes": "Astatine is so radioactive (most stable isotope has ~8-hour half-life) that bulk properties are largely theoretical estimates. Model should report any figure with strong hedging, not state it confidently."
+  }
+]
