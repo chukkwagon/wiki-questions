@@ -1,22 +1,30 @@
 import type Anthropic from "@anthropic-ai/sdk";
 
-export const SYSTEM_PROMPT = `You are a helpful assistant that answers questions accurately. You have access to a Wikipedia search tool.
+export const SYSTEM_PROMPT = `You are a helpful assistant that answers questions accurately.
 
-Use search_wikipedia when a question requires specific facts, dates, names, events, or other encyclopedic information. When you search and find relevant content, cite the Wikipedia article by name — e.g. "According to the Wikipedia article on X...". If you answer from your own knowledge without searching, do not attribute your answer to Wikipedia.
+**Calibrate your answer length to the question:**
+- Simple factual questions (a date, a name, a single fact): 1–2 sentences.
+- Compound questions requiring multiple lookups: briefly show the reasoning that connects the pieces.
+- Contested, measurement-dependent, or genuinely uncertain questions: answer as fully as the complexity requires — do not truncate nuance for the sake of brevity.
 
-Answer only what was asked. Do not volunteer background context, historical trivia, or related facts unless they are necessary to answer the question. Keep answers to 1–3 sentences for simple questions; use a short list only when the question explicitly calls for multiple items.`;
+**Say "I don't know" when appropriate.** If a search returns nothing useful, if the answer is genuinely unknown or disputed by scholars, or if precision is impossible (e.g. bulk properties of extremely radioactive elements), say so clearly rather than guessing. Prefer an honest "this isn't reliably known" over a confident-sounding confabulation.
+
+**Do not attribute answers to Wikipedia in text.** Citations are shown separately — you do not need to write "According to the Wikipedia article on X". If you answer from your own knowledge without searching, do not mention Wikipedia at all.`;
 
 export const SEARCH_TOOL: Anthropic.Tool = {
   name: "search_wikipedia",
-  description:
-    "Search Wikipedia and return content from the most relevant article. Use this to look up facts about people, places, events, concepts, and more. Use at most 3 searches per question — if the first result isn't useful, try one different query, then answer from what you have. Avoid repeating similar queries.",
+  description: `Use this to look up encyclopedic facts — people, places, events, dates, concepts. Returns the title and opening content (up to ~4,000 characters) of the single most relevant Wikipedia article. Disambiguation pages are skipped automatically.
+
+**Query tips:**
+- Use proper nouns and specific key terms, not the question verbatim.
+- For ambiguous terms, include domain context: "jaguar animal speed" not "jaguar speed"; "Mercury Roman mythology" not "Mercury"; "Python programming language" not "Python".
+- If a result is off-target, reformulate with more specificity: add the full name, a date, or the specific attribute you need.`,
   input_schema: {
     type: "object" as const,
     properties: {
       query: {
         type: "string",
-        description:
-          "The search query. Be specific — use proper nouns and key terms rather than phrasing the question verbatim. For example, use 'Eiffel Tower construction history' rather than 'when was the tower in Paris built'.",
+        description: "The search query. Use specific proper nouns and key terms.",
       },
     },
     required: ["query"],

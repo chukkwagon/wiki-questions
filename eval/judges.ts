@@ -12,36 +12,54 @@ const JudgeScoreSchema = z.object({
 export type JudgeScore = z.infer<typeof JudgeScoreSchema>;
 
 export interface Scores {
-  correctness: JudgeScore | null;   // null = N/A (no expected answer context)
-  faithfulness: JudgeScore | null;  // null = N/A (no search performed)
+  correctness: JudgeScore | null;
+  faithfulness: JudgeScore | null;
   searchAppropriateness: JudgeScore;
   answerQuality: JudgeScore;
 }
 
-const UNKNOWN_ESCAPE =
-  `If you cannot meaningfully evaluate this due to insufficient information, return {"score": null, "reasoning": "<explanation>"}.`;
+// Structured output tool — the model is forced to call this, eliminating parse failures.
+const SUBMIT_SCORE_TOOL: Anthropic.Tool = {
+  name: "submit_score",
+  description: "Submit your evaluation score and reasoning.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      score: {
+        description:
+          "0 = fails, 1 = adequate, 2 = excellent. Set to null if you cannot meaningfully evaluate this dimension due to insufficient information.",
+        anyOf: [{ type: "integer", minimum: 0, maximum: 2 }, { type: "null" }],
+      } as unknown as { type: "string" },
+      reasoning: {
+        type: "string" as const,
+        description: "One sentence explaining the score.",
+      },
+    },
+    required: ["score", "reasoning"],
+  },
+};
 
 async function judge(prompt: string): Promise<JudgeScore> {
   const response = await client.messages.create({
     model: "claude-haiku-4-5-20251001",
     max_tokens: 256,
+    tools: [SUBMIT_SCORE_TOOL],
+    tool_choice: { type: "tool", name: "submit_score" },
     messages: [{ role: "user", content: prompt }],
   });
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("");
 
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return { score: null, reasoning: "Could not parse judge response" };
+  const toolUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+  );
+  if (!toolUse) return { score: null, reasoning: "No tool call in response" };
 
-  try {
-    const result = JudgeScoreSchema.safeParse(JSON.parse(match[0]));
-    if (!result.success) return { score: null, reasoning: `Schema validation failed: ${result.error.issues[0]?.message}` };
-    return result.data;
-  } catch {
-    return { score: null, reasoning: "Could not parse judge response" };
-  }
+  const result = JudgeScoreSchema.safeParse(toolUse.input);
+  if (!result.success)
+    return {
+      score: null,
+      reasoning: `Schema validation failed: ${result.error.issues[0]?.message}`,
+    };
+  return result.data;
 }
 
 export async function scoreCorrectness(
@@ -50,33 +68,27 @@ export async function scoreCorrectness(
   actualAnswer: string
 ): Promise<JudgeScore> {
   if (expectedAnswer === null) {
-    return judge(`You are evaluating an AI assistant's answer where there is no single correct answer.
+    return judge(`Evaluate whether this answer is accurate and addresses the full complexity of the question.
 
 Question: ${question}
 Answer: ${actualAnswer}
 
-Score whether this answer is reasonable, accurate, and useful:
-- 0: Answer is clearly wrong, harmful, or completely off-topic
-- 1: Answer is plausible but imprecise, incomplete, or could mislead
-- 2: Answer is accurate, reasonable, and genuinely useful
-${UNKNOWN_ESCAPE}
-
-Return JSON only: {"score": <0|1|2|null>, "reasoning": "<one sentence>"}`);
+Score:
+- 0: Clearly wrong, harmful, or off-topic
+- 1: Directionally correct but leaves out important context, presents false certainty about uncertain things, or gives a surface-level answer that could mislead
+- 2: Accurate and genuinely useful — addresses the full complexity of what was asked, including any important caveats, unknowns, or competing perspectives`);
   }
 
-  return judge(`You are evaluating whether an AI assistant answered a factual question correctly.
+  return judge(`Evaluate whether this answer is correct relative to the expected answer.
 
 Question: ${question}
 Expected answer: ${expectedAnswer}
 Actual answer: ${actualAnswer}
 
-Score correctness:
-- 0: Answer is wrong or directly contradicts the expected answer
-- 1: Answer contains the right information but is incomplete or includes inaccuracies
-- 2: Answer is fully correct and captures the key fact(s)
-${UNKNOWN_ESCAPE}
-
-Return JSON only: {"score": <0|1|2|null>, "reasoning": "<one sentence>"}`);
+Score:
+- 0: Wrong, misleading, or directly contradicts the expected answer
+- 1: Gets the core fact right but misses important nuance, caveats, or secondary facts that the expected answer specifies
+- 2: Correct on all key facts AND captures the nuances specified in the expected answer`);
 }
 
 export async function scoreFaithfulness(
@@ -87,59 +99,55 @@ export async function scoreFaithfulness(
 ): Promise<JudgeScore | null> {
   if (toolCalls.length === 0) return null;
 
-  // Prefer citations — they're the exact passages the model claimed to use.
   if (citations.length > 0) {
     const citedPassages = citations
       .map((c) => `"${c.cited_text}" (from: ${c.document_title})`)
       .join("\n");
 
-    return judge(`You are evaluating whether an AI assistant's claims are supported by the passages it cited from Wikipedia.
+    return judge(`Evaluate whether the answer's claims are grounded in the cited passages.
 
 Question: ${question}
 
-Passages cited by the model:
+Cited passages:
 ${citedPassages}
 
-Answer given:
-${actualAnswer}
+Answer: ${actualAnswer}
 
-Score faithfulness — do the cited passages actually support the claims made?
-- 0: Key claims in the answer are not reflected in or are contradicted by the cited passages
-- 1: Most claims are supported but some details go beyond what the cited passages say
-- 2: The claims in the answer are well-supported by the cited passages
-${UNKNOWN_ESCAPE}
-
-Return JSON only: {"score": <0|1|2|null>, "reasoning": "<one sentence>"}`);
+Score:
+- 0: Key claims in the answer are absent from or contradicted by the cited passages
+- 1: Core claims are supported, but the answer adds context, numbers, or elaborations not present in the cited passages
+- 2: Every significant claim maps directly to content in the cited passages — the answer does not go beyond what was cited`);
   }
 
-  // Fall back to full article content when no structured citations were produced.
   const retrieved = toolCalls
     .filter((tc) => tc.article !== null)
-    .map((tc) => `[Query: "${tc.query}"]\n**${tc.article!.title}**\n${tc.article!.content}`)
+    .map(
+      (tc) =>
+        `[Query: "${tc.query}"]\n**${tc.article!.title}**\n${tc.article!.content}`
+    )
     .join("\n\n---\n\n");
 
   if (!retrieved) {
-    // Search was attempted but all requests failed — faithfulness genuinely unknown.
-    return { score: null, reasoning: "All Wikipedia requests failed; faithfulness cannot be assessed." };
+    return {
+      score: null,
+      reasoning:
+        "All Wikipedia requests failed; faithfulness cannot be assessed.",
+    };
   }
 
-  return judge(`You are evaluating whether an AI assistant's answer is grounded in the Wikipedia content it retrieved.
+  return judge(`Evaluate whether the answer's claims are grounded in the retrieved Wikipedia content.
 
 Question: ${question}
 
-Retrieved Wikipedia content:
+Retrieved content:
 ${retrieved}
 
-Answer given:
-${actualAnswer}
+Answer: ${actualAnswer}
 
-Score faithfulness — are the answer's claims supported by the retrieved content?
+Score:
 - 0: Answer makes significant claims not found in or contradicted by the retrieved content
-- 1: Answer is mostly grounded but contains minor extrapolations or details not in the retrieved content
-- 2: All key claims in the answer are directly supported by the retrieved content
-${UNKNOWN_ESCAPE}
-
-Return JSON only: {"score": <0|1|2|null>, "reasoning": "<one sentence>"}`);
+- 1: Core claims are supported, but the answer adds details or context that go beyond the retrieved content
+- 2: All key claims are directly supported by the retrieved content — no significant extrapolation`);
 }
 
 export async function scoreSearchAppropriateness(
@@ -151,20 +159,17 @@ export async function scoreSearchAppropriateness(
       ? "None — no searches were performed."
       : toolCalls.map((tc) => `"${tc.query}"`).join(", ");
 
-  return judge(`You are evaluating whether an AI assistant used its Wikipedia search tool appropriately.
+  return judge(`Evaluate whether the model used the Wikipedia search tool appropriately.
 
 Question: ${question}
-Search queries used: ${queriesUsed}
+Queries used: ${queriesUsed}
 
-Consider: does this question benefit from encyclopedic lookup, or is it something the model should handle from its own knowledge (e.g. math, simple definitions, creative tasks, conversational questions)? For factual questions, the model has latitude — not searching is acceptable if the answer is well within common knowledge; searching is also acceptable. Penalise only clear misjudgements.
+The model has latitude for factual questions — answering from training data is acceptable if the answer is well within common knowledge. Penalise only clear misjudgements or poor query execution.
 
-Score search appropriateness:
-- 0: Clearly wrong — searched for something that obviously needs no lookup (arithmetic, "write me a poem"), OR refused to search for something where current or verifiable information is clearly needed
-- 1: Reasonable decision, but queries were vague, redundant, or poorly targeted
-- 2: Sound judgment about whether to search; queries (if any) were specific and well-targeted
-${UNKNOWN_ESCAPE}
-
-Return JSON only: {"score": <0|1|2|null>, "reasoning": "<one sentence>"}`);
+Score:
+- 0: Clearly wrong — searched for something that needs no lookup (arithmetic, creative tasks), OR refused to search when current or verifiable information was clearly required
+- 1: Right call on whether to search, but queries were redundant, vague, or required multiple near-identical reformulations to find the right article
+- 2: Right call AND efficient — queries were specific, well-targeted, and found the needed information without unnecessary repetition`);
 }
 
 export async function scoreAnswerQuality(
@@ -178,31 +183,23 @@ export async function scoreAnswerQuality(
       ? "None"
       : toolCalls.map((tc) => `"${tc.query}"`).join(", ");
 
-  const citationSection =
-    toolCalls.length === 0
-      ? "No Wikipedia search was performed."
-      : citations.length > 0
-        ? `Passages cited from Wikipedia:\n${citations.map((c) => `  - "${c.cited_text}" (${c.document_title})`).join("\n")}`
-        : "Wikipedia was searched but no structured citations were produced. Check if the answer attributes the source in text (e.g. 'According to the Wikipedia article on X...').";
+  return judge(`Evaluate this answer across two aspects:
 
-  return judge(`You are evaluating the quality of an AI assistant's answer across three aspects:
+1. Clarity and detail: Well-structured and appropriately detailed? Simple factual questions warrant 1–2 sentences. Questions involving uncertainty, competing views, or synthesis warrant fuller answers — detail is appropriate here, not a flaw.
 
-1. Clarity and conciseness: Is the answer direct, well-structured, and appropriately brief?
-2. Citation: If Wikipedia was searched, does the answer attribute its source — either via structured citations or explicit text attribution (e.g. "According to the Wikipedia article on X...")?
-3. Calibration: Does the answer appropriately hedge when the information is contested, uncertain, or depends on how terms are defined?
+2. Calibration:
+   - For well-established facts: states them confidently without unnecessary hedging.
+   - For contested or measurement-dependent claims: acknowledges the dispute or ambiguity.
+   - For genuinely uncertain or unknowable answers: explains WHY certainty is elusive, what competing accounts or estimates exist, and corrects common misconceptions where relevant. "We don't know" is a 1; "here is what we do and don't know, and why" is a 2.
 
 Question: ${question}
 Wikipedia queries used: ${queriesUsed}
-${citationSection}
 Answer: ${actualAnswer}
 
-Score overall answer quality:
-- 0: Fails notably — unclear or off-topic; OR searched Wikipedia but the answer contains no attribution whatsoever; OR states contested/nuanced facts with false confidence
-- 1: Adequate but has gaps — attribution is vague or incomplete, hedging is weak, or answer is verbose/imprecise
-- 2: Clear and concise; attributes the Wikipedia source (via citations or explicit text attribution); appropriately hedges on contested or measurement-dependent information
-${UNKNOWN_ESCAPE}
-
-Return JSON only: {"score": <0|1|2|null>, "reasoning": "<one sentence>"}`);
+Score:
+- 0: Clearly fails — unclear or off-topic; OR states genuinely uncertain facts with false confidence; OR answers a falsely-premised question without correcting the premise
+- 1: Adequate — correct and clear, but calibration is shallow (e.g. says "this is disputed" without explaining the dispute, or "we don't know" without explaining why or what IS known)
+- 2: Well-calibrated — presents certain facts confidently; for uncertain or contested questions, explains the epistemic situation rather than just asserting a conclusion; structured appropriately for the complexity of the question`);
 }
 
 export async function scoreAll(

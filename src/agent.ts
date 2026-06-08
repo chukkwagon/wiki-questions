@@ -5,7 +5,7 @@ import { SYSTEM_PROMPT, SEARCH_TOOL } from "./prompts.js";
 const client = new Anthropic();
 
 const MAX_ITERATIONS = 10;
-const MAX_SEARCHES = 3;
+const MAX_SEARCHES = 10;
 
 // Matches the CitationCharLocation shape the API returns for plain-text documents.
 export interface Citation {

@@ -2,3 +2,4 @@ node_modules/
 dist/
 eval/results/
 .env
+.claude/

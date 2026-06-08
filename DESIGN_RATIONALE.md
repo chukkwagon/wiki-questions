@@ -1,157 +1,161 @@
 # Design Rationale
 
-## Overview
-
-This project is a Wikipedia Q&A CLI built with Claude and the Anthropic API. The system accepts natural language questions, decides whether to search Wikipedia, retrieves relevant content, and returns a grounded answer with source attribution. An LLM-as-judge eval suite measures answer quality across four dimensions.
-
-**Time spent:** approximately 90 minutes.
-
-**Model used:** `claude-sonnet-4-6` for the Q&A agent, `claude-haiku-4-5-20251001` for eval judges.
+**Time spent:** approximately 2.5 hours.
+**Models:** `claude-sonnet-4-6` (Q&A agent), `claude-haiku-4-5-20251001` (eval judges).
 
 ---
 
-## Scope Decisions
+## Scope
 
-Several scoping calls shaped the entire project before a line of code was written.
-
-**CLI over notebook.** The assignment allows a CLI, notebook, or script. A CLI was chosen for simplicity and reviewability — it produces clean, repeatable output without notebook state management.
-
-**MediaWiki API over a local dump.** The assignment explicitly allows a live API. The Wikipedia MediaWiki API requires no setup beyond HTTP and returns structured plain text, making it the right call for a time-boxed project. The retrieval implementation was intentionally kept thin; the eval suite was the primary investment.
-
-**Eval suite as the priority.** Given the stated goal of demonstrating prompt engineering and evaluation judgment, the decision was made early to invest in eval design depth rather than retrieval sophistication. This shaped every subsequent trade-off.
-
-**TypeScript over Python.** The initial scaffolding was redirected to TypeScript to match personal preference and toolchain comfort. The Anthropic SDK has strong TypeScript support.
+- **CLI over notebook** — clean, repeatable output without notebook state management.
+- **MediaWiki API over a local dump** — no setup beyond HTTP; sufficient for a PoC where retrieval sophistication isn't the focus.
+- **TypeScript** — personal preference; Anthropic SDK has strong TypeScript support. (Initial Python scaffolding was redirected.)
+- **Eval depth over retrieval depth** — given the stated goal, eval design was the primary investment. Retrieval was kept intentionally thin.
 
 ---
 
 ## System Design
 
-### Agent Loop
+Claude runs in an agentic loop with a `search_wikipedia(query: str)` tool until it produces a final answer. Wikipedia content is passed as a `document` block with `citations: { enabled: true }`, enabling the Anthropic citations API — the model produces structured citation metadata (exact quoted passages and character offsets) rather than relying on text-level attribution alone. The CLI shows the cited article URL when structured citations are present.
 
-Claude receives a `search_wikipedia(query: str)` tool and decides when to use it. The agent loop runs until `stop_reason === "end_turn"`, executing any Wikipedia searches along the way. The tool description includes explicit guidance:
-
-- Use at most 3 searches per question
-- Avoid repeating similar queries
-- Answer from what's been retrieved if searches aren't converging
-
-A **hard cap of 3 searches** is enforced in code: if the model attempts a 4th search, it receives "Search limit reached. Please answer using the information already retrieved." This was added after evals revealed the model sometimes issued 7–8 near-identical queries when Wikipedia was slow to respond — a redundant loop rather than a genuine reasoning chain.
-
-**Design constraint:** The cap of 3 is appropriate for simple-to-moderate questions but would limit genuinely complex multi-hop reasoning chains (e.g., questions requiring 3+ distinct lookup steps with no room for a retry). For a production system, a higher cap or dynamic search budget would be preferable.
-
-### Wikipedia Retrieval
-
-The MediaWiki API is called in two steps: a full-text search returns up to 3 candidate article titles, then the top non-disambiguation article is fetched as plain text (up to 4,000 characters). Requests are spaced 1.5 seconds apart with 2 retries and exponential backoff to manage Wikipedia's rate limits.
-
-Wikipedia content is passed to Claude as a `document` block with `citations: { enabled: true }`, enabling the Anthropic citations API. When Claude draws from the retrieved content, the response includes structured citation metadata — exact quoted text and character offsets into the source article. The CLI displays the cited article's URL when structured citations are present.
-
-### Prompt Caching
-
-The system prompt is marked with `cache_control: { type: "ephemeral" }`, enabling Anthropic's server-side prompt caching. This avoids re-processing the system prompt on repeated requests within the 5-minute cache window, reducing both latency and input token costs on multi-turn conversations.
+Retrieval calls the MediaWiki API in two steps: a full-text search for candidate titles, then a fetch of the first non-disambiguation result (up to 4,000 characters). The system prompt is marked with `cache_control: { type: "ephemeral" }` for Anthropic's server-side prompt caching.
 
 ---
 
-## Prompt Engineering
+## Iterations
 
-### System Prompt Iterations
+### Round 1: Citation gap → system prompt update
 
-The system prompt went through several iterations driven by eval results.
+The first eval run used a minimal system prompt with no citation or conciseness guidance. The model answered correctly but almost never named the Wikipedia source, scoring 1/2 on Answer Quality in nearly every search-using case. Added explicit attribution instruction: "cite the Wikipedia article by name — e.g. 'According to the Wikipedia article on X...'". Quality scores improved across the board.
 
-**v1 (initial):** A minimal prompt with no explicit citation or conciseness guidance. Evals showed the model consistently scored 1/2 on Answer Quality because it answered correctly but never named the Wikipedia source.
+### Round 2: Conciseness prompt → citation regression → immediate fix
 
-**v2 (citation instruction added):** Added explicit instruction to cite by article name ("According to the Wikipedia article on X..."). Answer Quality scores improved across simple factual cases.
+Added "quote only the passages directly relevant to the question" to address verbose answers. A smoke test immediately showed structured citation counts dropped to zero: the "minimize quoting" instruction was suppressing the citations API, which works by the model naturally drawing from document blocks. The phrase was removed before any eval was run. This was a clear example of a prompt change with an unintended semantic conflict — a quick regression test caught it before it contaminated results.
 
-**v3 (conciseness added, citations accidentally nerfed):** Added "quote only the passages directly relevant to the question" to address verbose answers. Eval smoke test showed structured citation count dropped to zero — the instruction to minimize quoting suppressed the citations API's natural behavior. The phrase was removed immediately after the regression was caught.
+The citation instruction was also made conditional: "when you search and find relevant content, cite by name; if you answer from your own knowledge without searching, do not attribute your answer to Wikipedia." Without this, the model applied the citation style unconditionally and fabricated "According to the Wikipedia article on X..." even when no search had occurred.
 
-**v4 (final):** Retains the citation attribution style and adds conciseness guidance ("Answer only what was asked. Do not volunteer background context or historical trivia unless necessary. Keep answers to 1–3 sentences for simple questions").
+### Round 3: Wikipedia rate limiting → delays and retry logic
 
-### Tool Description
+Running cases back-to-back triggered Wikipedia's rate limiter, causing cascading search failures and answers like "I'm having trouble reaching Wikipedia." Increased inter-request delay from 500ms to 1500ms and added 2-retry exponential backoff. Also added 1.2–1.8s jitter between eval cases to stay under Haiku's 50 RPM judge limit. Both fixes were mechanical responses to observable eval infrastructure failures, not prompt engineering work.
 
-The tool description instructs the model on search strategy, not just capability. Adding "use at most 3 searches" and "avoid repeating similar queries" to the description reduced redundant search loops before the hard cap was even needed — the model internalized the constraint as a behavioral expectation rather than waiting to hit a wall.
+### Round 4: Redundant search loops → search cap and tool description guidance
+
+Evals showed the model sometimes issued 7–8 near-identical queries when Wikipedia was slow — a polling loop rather than a genuine reasoning chain. Two changes: added "use at most 3 searches; avoid repeating similar queries" to the tool description (soft nudge), and enforced a hard cap in code — on a 4th search attempt, the model receives "Search limit reached — answer using what you have." Both were needed: the description reduced loops before they hit the cap; the cap provided a guaranteed ceiling.
+
+**Design constraint noted:** the cap of 3 is appropriate for my eval set but limits genuinely complex multi-hop chains. Noted in "What I'd Do Next."
+
+### Round 5: Local cache → removed
+
+An agent-response cache was added to `.cache/` (keyed by a hash of question + system prompt) for development convenience. On review, this was identified as the wrong layer for two reasons: (1) the original request was for Anthropic API prompt caching, not filesystem response caching, and (2) eval results mixing cached and fresh responses give a misleading pass rate — you're measuring a blend of old and current system behavior. The cache was removed entirely. Anthropic-side prompt caching via `cache_control` was already in place.
+
+A related bug was also fixed: when Wikipedia requests failed, the agent's "Based on my knowledge..." fallback was being cached and served indefinitely, preventing retries. The cache was updated to skip any result with a Wikipedia failure before it was removed entirely.
+
+### Round 6: `requires_search` → removed
+
+Every test case had a `requires_search: boolean` field that told the judge whether a search was expected. This caused the Search Appropriateness judge to penalize the model for correctly answering a factual question from training data without searching — which is often a perfectly reasonable decision. The field was encoding a pre-baked judgment that belongs to the judge, not the test case. It was removed; the judge now reasons from the question itself, with latitude for factual questions and strict expectations only for clearly non-encyclopedic ones.
+
+### Round 7: Judge improvements
+
+Several judge-level improvements were made in response to observable failures:
+
+- **Zod validation** on judge output — Haiku occasionally returned malformed or non-JSON responses that were silently coerced to `score: 1`. Zod catches bad output explicitly with a descriptive error.
+- **Unknown escape hatch** — judges were forced to score even when context was insufficient (e.g., faithfulness when all Wikipedia requests failed). Added `{"score": null}` as a valid return, applied after reading Anthropic's eval blog post which specifically recommends giving LLM judges a way out.
+- **Citation count → cited passages** — the quality judge was told "the model produced N citations" but couldn't see them, causing it to score 0 for "no visible citations" even when attribution was clear in the answer text. Changed to passing the actual quoted passages so the judge can verify grounding directly.
+- **Quality judge sub-dimensions made explicit** — clarity, citation attribution, and calibration are now called out separately in the rubric. Previously bundled without names, which led to inconsistent scoring.
+
+### Round 8: Test case evolution
+
+The initial suite of 26 cases (simple_factual, multi_hop, comparative, no_search_needed, calibration, edge_case, retrieval_probe) was skewed toward cases the system handled easily. After several eval runs, it was clear the cases weren't surfacing interesting failures — I was iterating on infrastructure and judge plumbing rather than learning anything about model behavior.
+
+Four new categories were added:
+
+- **`false_premise`** — questions with incorrect assumptions the model should correct rather than answer at face value (Napoleon "winning" Waterloo; Einstein "failing" math; Venus having moons).
+- **`misleading`** — questions presupposing a common myth (Great Wall visible from space; Napoleon's height).
+- **`synthesis`** — questions requiring information from two distinct Wikipedia articles combined in a non-obvious way (Darwin and Lincoln sharing a birthday; the Titanic using radio).
+- **`epistemic_limits`** — questions where the answer is genuinely uncertain or unknowable, testing whether the model hedges or confabulates (Caesar's last words; the boiling point of astatine).
+
+Additional case hygiene improvements: several cases had `null` expected answers when they had specific, knowable correct answers derivable from Wikipedia — these were filled in. The suite was pruned to ≤3 cases per category to reduce run time and avoid over-indexing on any single failure mode. Cases were renumbered to be sequential within each category.
+
+### Round 9: System prompt restructured + tool description improved
+
+The original system prompt mixed answer quality guidance with tool usage instructions. These were separated: the system prompt now owns only answer quality concerns (length calibration, epistemic honesty, citation attribution), and the tool description owns all tool-specific guidance (what it returns, when to use it, disambiguation strategy).
+
+Key changes to the system prompt:
+- **Length calibration split by question type** — simple factual questions get 1–2 sentences; contested or uncertain questions are explicitly allowed to be as long as needed. The previous "1–3 sentences" cap was suppressing nuance on calibration and epistemic cases.
+- **Explicit epistemic guidance** — "say 'I don't know' when appropriate" with concrete examples of when precision is impossible. This is distinct from hedging; it tells the model when to stop rather than when to qualify.
+- **Conditional citation instruction** — "do not attribute answers to Wikipedia if you didn't search." Removed the text attribution instruction ("According to the Wikipedia article on X...") entirely, since structured citations handle attribution when the API fires.
+
+Key changes to the tool description:
+- Added what the tool returns (single article, truncated at ~4,000 characters, disambiguation auto-skipped) so the model understands its retrieval budget.
+- Added concrete disambiguation examples ("jaguar animal speed" not "jaguar speed") rather than the abstract "be specific."
+- The search cap was raised from 3 to 10 in code, and the prescriptive "try one different query" advice was removed — that's agent behavior, not tool behavior.
+
+### Round 10: Structured outputs + sharpened judge rubrics
+
+All four judges were updated:
+
+**Structured outputs** — replaced JSON prompt instructions with a `submit_score` tool that the model is forced to call via `tool_choice: { type: "tool", name: "submit_score" }`. This eliminated all "Could not parse judge response" failures — the API guarantees the output structure.
+
+**Sharpened rubrics** — the core problem was that 1 and 2 were hard to distinguish. The rubrics were rewritten to make the 1/2 boundary explicit for each dimension:
+- *Correctness*: 1 = core fact right but misses nuance the expected answer specifies; 2 = correct on all key facts AND captures the nuances.
+- *Faithfulness*: 1 = core claims supported but answer adds context beyond citations; 2 = every significant claim maps directly to the cited passages.
+- *Search Appropriateness*: 1 = right call on whether to search, but redundant or vague queries; 2 = right call AND efficient, non-redundant queries.
+- *Answer Quality*: 1 = "this is disputed" or "we don't know" without explanation; 2 = explains WHY, enumerates competing views, corrects misconceptions. Citation was removed from this dimension since it's now handled by the structured citations API rather than prompt instruction.
 
 ---
 
-## Eval Suite Design
+## Eval Suite
 
-### Test Cases
+32 test cases across 11 categories (≤3 per category):
 
-26 cases across 6 categories:
-
-| Category | Count | What it tests |
-|---|---|---|
-| `simple_factual` | 6 | Basic date/name/place lookups |
-| `multi_hop` | 3 | Two-step reasoning (identify entity, then look up attribute) |
-| `comparative` | 3 | Questions requiring two searches and synthesis |
-| `no_search_needed` | 3 | Math, definitions, creative tasks — model should not search |
-| `calibration` | 3 | Contested or measurement-dependent facts requiring hedging |
-| `edge_case` | 5 | Ambiguous queries, fictional entities, time-sensitive facts |
-| `retrieval_probe` | 3 | Disambiguation risks (Python, Mercury, Jaguar) where the obvious query returns the wrong article |
-| `false_premise` | 3 | Questions containing incorrect assumptions — model should correct rather than answer at face value |
-| `misleading` | 2 | Questions that presuppose a common myth — model should push back with sourced evidence |
-| `synthesis` | 3 | Questions requiring information from two distinct Wikipedia articles to be combined in non-obvious ways |
-| `epistemic_limits` | 5 | Questions where the answer is genuinely unknown, historically uncertain, or where precision is impossible — model should hedge or admit ignorance rather than confabulate |
-
-The `retrieval_probe` category was added mid-session after identifying the main limitation of our retrieval approach: keyword search doesn't always return the right article for ambiguous terms. These cases have concrete ground truth and documented failure modes, so the correctness and faithfulness judges catch retrieval failures cleanly.
-
-The `calibration` category was added to test a dimension identified as a gap: does the model hedge appropriately on contested or measurement-dependent questions? Cases include the telephone invention (Bell vs. Meucci), the tallest mountain (Everest vs. Mauna Kea vs. Chimborazo by different measurements), and Pluto's planetary status.
+| Category | What it tests |
+|---|---|
+| `simple_factual` | Basic date/name/place lookups |
+| `multi_hop` | Two-step reasoning chains |
+| `comparative` | Questions requiring two searches and synthesis |
+| `no_search_needed` | Math, definitions — model should not search |
+| `calibration` | Contested or measurement-dependent facts requiring hedging |
+| `edge_case` | Ambiguous queries, fictional entities, time-sensitive facts |
+| `retrieval_probe` | Disambiguation risks where the obvious query returns the wrong article |
+| `false_premise` | Questions with incorrect assumptions — model should correct, not answer at face value |
+| `misleading` | Questions presupposing a common myth — model should push back with evidence |
+| `synthesis` | Requires combining two distinct Wikipedia articles in non-obvious ways |
+| `epistemic_limits` | Answers that are genuinely uncertain — model should hedge rather than confabulate |
 
 ### Judging Dimensions
 
-Each case is scored by Claude Haiku on four dimensions (0–2 each):
+Four dimensions, each scored 0–2 by Claude Haiku via forced tool call (`submit_score`):
 
-**Correctness** — Does the answer match the expected fact? For cases with no single correct answer (open-ended, ambiguous, or edge cases), the judge evaluates reasonableness instead.
+- **Correctness** — does the answer match the expected fact and capture its nuances? For open-ended cases, evaluates accuracy and completeness of reasoning.
+- **Faithfulness** — are claims grounded in retrieved content? Uses cited passages when structured citations are available; falls back to full article text otherwise. `N/A` when no search was performed; `Unknown` when all Wikipedia requests failed.
+- **Search Appropriateness** — was the search decision sound AND efficiently executed? Right call with redundant queries scores 1; right call with well-targeted queries scores 2.
+- **Answer Quality** — clarity, appropriate detail for the question type, and calibration depth. 1 = adequate hedging; 2 = explains the epistemic situation (why uncertain, what IS known, corrections to misconceptions).
 
-**Faithfulness** — Are the answer's claims grounded in what was actually retrieved? When structured citations are available, the judge evaluates whether cited passages support the claims made. When citations weren't produced but article content was retrieved, the judge compares claims against the full article text. This dimension is `N/A` when no search was performed, and `Unknown` when all Wikipedia requests failed (a network failure shouldn't penalize the model).
-
-**Search Appropriateness** — Was the search decision sound, and were queries well-targeted? The judge reasons from the question itself rather than a pre-baked label. For clearly non-encyclopedic questions (arithmetic, creative tasks), searching scores 0. For factual questions, the model has latitude — answering correctly from training data is acceptable; the judge only penalises clear misjudgements or poor query construction.
-
-**Answer Quality** — Three sub-dimensions bundled together: clarity/conciseness, citation attribution (text-level or structured), and calibration (appropriate hedging on contested or measurement-dependent claims). These were identified as related enough to bundle rather than score separately.
-
-Judge output is validated with Zod (`z.number().int().min(0).max(2).nullable()`) so malformed LLM responses are caught explicitly rather than silently coerced.
-
-Judges include an escape hatch: "If you cannot meaningfully evaluate this due to insufficient information, return `{"score": null, ...}`." This was added after the blog post ["Demystifying Evals for AI Agents"](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents) highlighted that LLM judges should have a way out rather than being forced to score when context is insufficient. In practice this fires on faithfulness when Wikipedia was unreachable — returning `null` is more honest than scoring 0 or 1 on a dimension that genuinely can't be evaluated.
-
-A case **passes** if it scores ≥ 75% of its maximum possible points. The maximum varies per case (8 for search-using cases, 6 for no-search cases where faithfulness is N/A).
+A case **passes** at ≥ 75% of its maximum possible score.
 
 ---
 
-## What We Learned from Evals
+## Final Eval Results
 
-### Citation behavior without explicit instruction
+**87.5% pass rate (28/32).** The drop from earlier runs (93.8%) reflects more discriminating judges rather than system regression — the sharpened rubrics are catching real gaps that were previously masked by lenient 1/2 distinctions.
 
-The first eval run (with a minimal system prompt) showed that the model consistently answered correctly but almost never named the Wikipedia source. The quality judge scored most cases 1/2 with reasoning like "fails to cite the Wikipedia article by name despite a search being conducted." This was a reliable, repeatable signal — not noise — and directly prompted the system prompt update.
-
-### The model handles no-search cases correctly without being told
-
-All three `no_search_needed` cases (math, photosynthesis explanation, HTTP acronym) scored 2/2 on Search Appropriateness without any explicit instruction not to search. This was a useful baseline: the model's default behavior is already calibrated for obvious no-search cases. Explicit instruction in the system prompt was reserved for improving citation behavior, where the default was clearly insufficient.
-
-### Calibration is hit-or-miss without prompting
-
-`calibration-002` (tallest mountain) consistently scored 1/2 on Correctness because the model stated "Mount Everest is the tallest mountain" without acknowledging that "tallest" is measurement-dependent. The calibration cases were specifically designed to catch this, and they did. The answer quality rubric also penalizes overconfident claims on contested topics, creating a second signal.
-
-### Wikipedia rate limiting is a real operational constraint
-
-Running 26 cases back-to-back without a delay triggered Wikipedia's rate limiter, causing cascading search failures. This appeared in evals as many `[Unknown] All Wikipedia requests failed` faithfulness scores and answers that said "I'm having trouble reaching Wikipedia." The fix was increasing inter-request delay to 1.5 seconds with retry logic — but the underlying fragility of depending on a public API with no authentication is a genuine production concern.
-
-### The quality judge was confused by citation metadata vs. text attribution
-
-After integrating the citations API, the judge prompt passed "The model produced N inline citation(s)" as context. The judge interpreted this as a claim about the answer text and looked for citation markers that weren't visually present — scoring 0/2 for "no citations visible" even when the answer had clear text attribution. The fix was replacing the citation count with the actual cited passages, letting the judge verify grounding directly.
-
-### The citations API is inconsistent in multi-turn tool-use conversations
-
-Structured citation objects (with character offsets into the source document) are reliably produced for single-search responses but inconsistently produced when multiple tool calls occur across several conversation turns. The Anthropic docs confirm documents in tool results are citable (document indices span all messages), but the model's behavior varies. The faithfulness judge handles this by falling back to full article content comparison when no structured citations are present. This is noted as a behavioral quirk rather than an API limitation.
+Failures:
+- **`misleading-001` and `misleading-002`** (Great Wall / Napoleon height): both cases exhausted all 10 searches without producing an answer. The myth debunking doesn't live in the primary article for either subject — the model kept reformulating queries without finding the right page. Retrieval architecture failure, not a reasoning failure.
+- **`edge-001`** (Python): the model hallucinated a non-existent Python version ("3.14.5 as of May 2026"), caught by the correctness judge.
+- **`calibration-002`** (tallest mountain): persistent — the model always answers Everest without acknowledging the measurement-dependency. The search appropriateness judge also penalised three near-identical queries.
 
 ---
 
-## What We'd Do Next
+## What I'd Do Next
 
-**Human calibration of judges.** The eval blog post stresses that LLM judges should be calibrated against human graders before their scores are trusted. We haven't done this. In practice it would mean hand-labeling 20–30 cases across all four dimensions and measuring agreement with Haiku's scores.
+**Improve search efficiency.** The misleading category failures exposed that the model issues redundant queries when Wikipedia doesn't immediately return the right article — 10 near-identical reformulations of the same question rather than strategically different angles. Several approaches worth exploring: feeding back to the model which articles it has already retrieved so it can avoid redundancy; a two-phase approach (search for candidate titles first, then fetch the most relevant one); or exposing article summaries before full content so the model can decide whether to fetch. The current architecture gives the model no signal about what it has already tried.
 
-**pass@k metrics.** Running each question once doesn't distinguish "reliably correct" from "got lucky." Pass@k (at least one success in k runs) and pass^k (all k runs succeed) would give a better picture of consistency — especially important for the calibration cases where hedging behavior is stochastic.
+**Revisit the pass threshold and add harder cases.** At 87.5% with more discriminating judges, there's still room before saturation but less than before. The 75% threshold is somewhat arbitrary and should be validated against human judgment. Harder cases — myth debunking that requires navigating to a specific Wikipedia sub-article, questions requiring synthesis across 3+ articles, adversarial false premises with plausible-sounding supporting context — would increase eval headroom.
 
-**Higher search cap or dynamic search budgeting.** The cap of 3 handles our eval set but would limit genuinely complex multi-hop reasoning. A production system would want either a higher cap (4–5) or a mechanism where the model signals "I need another search to complete this chain" rather than hitting a blunt limit.
+**Probe contentious and politically sensitive questions.** I haven't tested questions where the "correct" answer is inherently contested along political or values lines — questions about ongoing conflicts, causal attribution for historical events, policy questions. The key design question is whether the tool should explicitly refuse these or rely on the base model's existing safety training. The base model has good default behavior, but a tool explicitly designed to retrieve and synthesise information from Wikipedia may have different affordances than a general assistant — worth testing explicitly.
 
-**Disambiguation handling.** Our retrieval currently skips disambiguation pages and tries the next candidate. For the `retrieval_probe` cases, this worked — "Python" skipped the disambiguation page and landed on the programming language article. But a more robust approach would detect when the returned article doesn't match the intent and retry with a more specific query.
+**Human calibration of judges.** Haiku's scores are internally consistent but not externally validated. The right approach is to hand-label ~30 cases across all four dimensions and measure agreement. Without this, pass rate is a relative number, not an absolute one.
 
-**Citation reliability in multi-turn conversations.** Investigate whether document position in conversation history (earlier vs. later tool results) affects citation production, and whether restructuring the conversation (e.g., collecting all documents before the final turn) improves consistency.
+**pass@k metrics for consistency.** Running each question once doesn't distinguish "reliably correct" from "got lucky." pass@k and pass^k would reveal which categories are robust vs. stochastic — especially relevant for calibration and epistemic_limits where hedging behaviour varies run-to-run.
 
-**Cached Wikipedia content.** The current implementation fetches Wikipedia on every question (modulo our agent cache). A production system would maintain a local index or use a mirror API with authentication to avoid rate limits and improve latency.
+**Citation reliability in multi-turn conversations.** Structured citations are inconsistently produced when documents span multiple tool call turns. Worth investigating whether document position in conversation history affects citation production, and whether restructuring — collecting all retrieved documents before a final synthesis turn — improves consistency.
